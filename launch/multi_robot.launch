@@ -1,0 +1,18 @@
+<launch>
+  <group ns="robot1">
+    <param name="/background_r" value="0" />
+    <param name="/background_g" value="0" />
+    <param name="/background_b" value="255" />
+    <node pkg="turtlesim" type="turtlesim_node" name="robot1_sim"/>
+  </group>
+
+  <group ns="robot2">
+    <param name="/background_r" value="0" />
+    <param name="/background_g" value="255" />
+    <param name="/background_b" value="0" />
+    <node pkg="turtlesim" type="turtlesim_node" name="robot2_sim"/>
+  </group>
+
+  <node pkg="multi_robot_bsp" type="robot1_node.py" name="robot1_node" output="screen"/>
+  <node pkg="multi_robot_bsp" type="robot2_node.py" name="robot2_node" output="screen"/>
+</launch>
