@@ -112,7 +112,7 @@ def main():
             flat = [val for row in belief for val in row]
             belief_msg = BeliefGrid(grid=flat, sender_id="robot2")
             belief_pub.publish(belief_msg)
-            rospy.loginfo(f"[R1] Published belief: {flat}")
+            rospy.loginfo(f"[R2] Published belief: {flat}")
 
         # Move toward target
         msg = Twist()
