@@ -55,6 +55,9 @@ def predict_other_robot_target():
     candidates = [(i, j) for i in range(5) for j in range(5) if belief[i][j] == min_val]
     return sorted(candidates)[0]
 
+def is_belief_fully_reduced():
+    return all(all(cell <= 0.01 for cell in row) for row in belief)
+
 # ------------------- Main Execution -------------------
 
 def main():
@@ -83,6 +86,13 @@ def main():
         update_belief_based_on_position()
 
         if pose is None:
+            rate.sleep()
+            continue
+        
+        if is_belief_fully_reduced():
+            rospy.loginfo("[R1] Belief fully reduced. Stopping.")
+            stop_msg = Twist()  # all zeros
+            pub.publish(stop_msg)
             rate.sleep()
             continue
 
