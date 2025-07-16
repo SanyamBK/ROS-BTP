@@ -35,44 +35,24 @@ def pose_callback(msg):
     global pose
     pose = msg
 
-# def update_belief_based_on_position():
-#     global belief, pose
-#     if pose is None:
-#         return
-#     i = min(max(int((pose.x - 2) // 2), 0), 4)
-#     j = min(max(int((pose.y - 2) // 2), 0), 4)
-#     belief[i][j] = max(belief[i][j] - 0.2, 0.0)
-#     rospy.loginfo(f"[R2] Reduced belief[{i}][{j}] to {belief[i][j]:.2f} based on position.")
-
 def update_belief_based_on_position():
     global belief, pose
     if pose is None:
         return
 
-    # Determine which grid cell we’re in
+    # CORRECTION STEP — update the cell the robot is in
     i = min(max(int((pose.x - 2) // 2), 0), 4)
     j = min(max(int((pose.y - 2) // 2), 0), 4)
 
-    # Bayes Filter: suppose R2's sensor expects to see "unclear" if uncertain
+    # Example: sensor expects "unclear" if uncertain
     P_unclear_given_uncertain = 0.8
     P_unclear_given_certain = 0.2
 
     prior = belief[i][j]
-
-    # Higher prior = more uncertain → more likely to sense unclear
     likelihood = P_unclear_given_uncertain * prior + P_unclear_given_certain * (1 - prior)
-
-    # Bayesian update
     belief[i][j] = prior * likelihood
 
-    # Normalize the grid
-    total = sum([sum(row) for row in belief])
-    for ii in range(5):
-        for jj in range(5):
-            belief[ii][jj] /= total
-
     rospy.loginfo(f"[R2] Bayesian updated belief[{i}][{j}] = {belief[i][j]:.2f}")
-
 
 def find_min_uncertain_cell():
     min_val = min(min(row) for row in belief)
@@ -80,7 +60,6 @@ def find_min_uncertain_cell():
     return sorted(candidates)[0]
 
 def predict_other_robot_target():
-    # Local replica of robot1's max-uncertainty target logic
     max_val = max(max(row) for row in belief)
     candidates = [(i, j) for i in range(5) for j in range(5) if belief[i][j] == max_val]
     return sorted(candidates)[0]
@@ -94,7 +73,6 @@ def main():
     global pose
     rospy.init_node('robot2_controller')
 
-    # Set turtle pen color (green)
     rospy.wait_for_service('/robot2/turtle1/set_pen')
     try:
         set_pen = rospy.ServiceProxy('/robot2/turtle1/set_pen', SetPen)
@@ -102,7 +80,6 @@ def main():
     except rospy.ServiceException as e:
         rospy.logwarn(f"[R2] Failed to set pen: {e}")
 
-    # Publishers and Subscribers
     pub = rospy.Publisher('/robot2/turtle1/cmd_vel', Twist, queue_size=10)
     rospy.Subscriber('/robot2/turtle1/pose', Pose, pose_callback)
     rospy.Subscriber('/comm_channel', String, lambda msg: rospy.loginfo(f"[COMM] {msg.data}"))
@@ -110,7 +87,7 @@ def main():
     comm_pub = rospy.Publisher('/comm_channel', String, queue_size=10)
     belief_pub = rospy.Publisher('/belief_channel', BeliefGrid, queue_size=10)
 
-    rate = rospy.Rate(1)  # 1 Hz loop
+    rate = rospy.Rate(1)
 
     while not rospy.is_shutdown():
         update_belief_based_on_position()
@@ -118,22 +95,42 @@ def main():
         if pose is None:
             rate.sleep()
             continue
-        
+
         if is_belief_fully_reduced():
             rospy.loginfo("[R2] Belief fully reduced. Stopping.")
-            stop_msg = Twist()  # all zeros
+            stop_msg = Twist()
             pub.publish(stop_msg)
             rate.sleep()
             continue
 
-        # Plan movement
+        # === PLAN MOVEMENT ===
         target = find_min_uncertain_cell()
         target_x = 2 + target[0] * 2
         target_y = 2 + target[1] * 2
         angle_to_target = math.atan2(target_y - pose.y, target_x - pose.x)
         angle_diff = angle_to_target - pose.theta
 
-        # Predict and compare with other robot
+        # Current cell belief
+        i = min(max(int((pose.x - 2) // 2), 0), 4)
+        j = min(max(int((pose.y - 2) // 2), 0), 4)
+        local_belief = belief[i][j]
+
+        msg = Twist()
+        msg.linear.x = 0.5 + 1.5 * local_belief
+        msg.angular.z = angle_diff
+
+        # === PREDICTION STEP — add motion-based uncertainty ===
+        motion_uncertainty = abs(msg.linear.x) * 0.05 + abs(msg.angular.z) * 0.02
+        for ii in range(5):
+            for jj in range(5):
+                belief[ii][jj] = min(belief[ii][jj] + motion_uncertainty, 1.0)
+
+        # OPTIONAL normalize
+        total = sum([sum(row) for row in belief])
+        for ii in range(5):
+            for jj in range(5):
+                belief[ii][jj] /= total
+
         predicted_other = predict_other_robot_target()
         if predicted_other != target:
             comm_msg = String()
@@ -142,19 +139,9 @@ def main():
             flat = [val for row in belief for val in row]
             belief_msg = BeliefGrid(grid=flat, sender_id="robot2")
             belief_pub.publish(belief_msg)
-            # rospy.loginfo(f"[R2] Published belief: {flat}")
 
-        # After pose → grid index:
-        i = min(max(int((pose.x - 2) // 2), 0), 4)
-        j = min(max(int((pose.y - 2) // 2), 0), 4)
-
-        local_belief = belief[i][j]
-
-        msg = Twist()
-        msg.linear.x = 0.5 + 1.5 * local_belief  # scale speed: more certain → slower
-        msg.angular.z = angle_diff
         pub.publish(msg)
-        rospy.loginfo(f"[R2] Moving towards target {target} with speed {msg.linear.x:.2f} and angle {angle_diff:.2f}")
+        rospy.loginfo(f"[R2] Moving towards target {target} | Local belief={local_belief:.2f} | Speed={msg.linear.x:.2f} | Added motion noise={motion_uncertainty:.4f}")
         rate.sleep()
 
 if __name__ == '__main__':
