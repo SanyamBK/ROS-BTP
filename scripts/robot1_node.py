@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import rospy
 import math
+import numpy as np
 from geometry_msgs.msg import Twist
 from turtlesim.msg import Pose
 from std_msgs.msg import String
@@ -40,19 +41,52 @@ def update_belief_based_on_position():
     if pose is None:
         return
 
-    # CORRECTION STEP — update the cell the robot is in
+    # 1️⃣ PREDICTION STEP — Diffuse uncertainty
+    new_belief = [[0.0 for _ in range(5)] for _ in range(5)]
+    for i in range(5):
+        for j in range(5):
+            # Keep 80% in place, spread 20% to neighbors
+            main = 0.8 * belief[i][j]
+            spread = 0.2 * belief[i][j]
+            new_belief[i][j] += main
+            neighbors = [
+                (max(i-1,0), j), (min(i+1,4), j),
+                (i, max(j-1,0)), (i, min(j+1,4))
+            ]
+            for ni, nj in neighbors:
+                new_belief[ni][nj] += spread / len(neighbors)
+    belief[:] = new_belief
+
+    # 2️⃣ CORRECTION STEP — Bayesian + spill to neighbors
     i = min(max(int((pose.x - 2) // 2), 0), 4)
     j = min(max(int((pose.y - 2) // 2), 0), 4)
 
-    # Example: sensor says "clear"
-    P_clear_given_clear = 0.8
-    P_clear_given_not_clear = 0.3
+    P_clear_given_clear = 0.9
+    P_clear_given_not_clear = 0.1
 
     prior = belief[i][j]
     likelihood = P_clear_given_clear * (1 - prior) + P_clear_given_not_clear * prior
-    belief[i][j] = prior * likelihood
+    correction = prior * likelihood
 
-    rospy.loginfo(f"[R1] Bayesian updated belief[{i}][{j}] = {belief[i][j]:.2f}")
+    neighbor_fraction = 0.2
+    main_fraction = 1.0 - neighbor_fraction
+
+    neighbors = [
+        (max(i-1,0), j), (min(i+1,4), j),
+        (i, max(j-1,0)), (i, min(j+1,4))
+    ]
+
+    belief[i][j] = correction * main_fraction
+    for ni, nj in neighbors:
+        belief[ni][nj] += correction * neighbor_fraction / len(neighbors)
+
+    # Normalize grid
+    total = sum([sum(row) for row in belief])
+    for ii in range(5):
+        for jj in range(5):
+            belief[ii][jj] /= total
+
+    rospy.loginfo(f"[R1] Bayesian updated belief[{i}][{j}] = {belief[i][j]:.3f}")
 
 def find_max_uncertain_cell():
     max_val = max(max(row) for row in belief)
@@ -73,7 +107,6 @@ def main():
     global pose
     rospy.init_node('robot1_controller')
 
-    # Set turtle pen color (red)
     rospy.wait_for_service('/robot1/turtle1/set_pen')
     try:
         set_pen = rospy.ServiceProxy('/robot1/turtle1/set_pen', SetPen)
@@ -88,7 +121,7 @@ def main():
     comm_pub = rospy.Publisher('/comm_channel', String, queue_size=10)
     belief_pub = rospy.Publisher('/belief_channel', BeliefGrid, queue_size=10)
 
-    rate = rospy.Rate(1)  # 1 Hz loop
+    rate = rospy.Rate(1)
 
     while not rospy.is_shutdown():
         update_belief_based_on_position()
@@ -104,46 +137,34 @@ def main():
             rate.sleep()
             continue
 
-        # === PLAN MOVEMENT ===
         target = find_max_uncertain_cell()
         target_x = 2 + target[0] * 2
         target_y = 2 + target[1] * 2
         angle_to_target = math.atan2(target_y - pose.y, target_x - pose.x)
         angle_diff = angle_to_target - pose.theta
 
-        # Get local belief for speed scaling
         i = min(max(int((pose.x - 2) // 2), 0), 4)
         j = min(max(int((pose.y - 2) // 2), 0), 4)
         local_belief = belief[i][j]
 
+        motion_noise = np.random.uniform(-0.3, 0.3)
+
         msg = Twist()
-        msg.linear.x = 0.5 + 1.5 * local_belief
-        msg.angular.z = angle_diff
+        msg.linear.x = max(0.1, 0.5 + 1.5 * local_belief + motion_noise)
+        msg.angular.z = angle_diff + np.random.uniform(-0.3, 0.3)
 
-        # === PREDICTION STEP: add motion-based noise ===
-        motion_uncertainty = abs(msg.linear.x) * 0.05 + abs(msg.angular.z) * 0.02
-        for ii in range(5):
-            for jj in range(5):
-                belief[ii][jj] = min(belief[ii][jj] + motion_uncertainty, 1.0)
-
-        # OPTIONAL normalize (can skip if total sum is not needed)
-        total = sum([sum(row) for row in belief])
-        for ii in range(5):
-            for jj in range(5):
-                belief[ii][jj] /= total
-
-        # === COMMUNICATION ===
         predicted_other = predict_other_robot_target()
         if predicted_other != target:
             comm_msg = String()
-            comm_msg.data = "[R1] Detected disagreement, triggering communication!"
+            comm_msg.data = "[R1] Disagreement detected, triggering communication!"
             comm_pub.publish(comm_msg)
             flat = [val for row in belief for val in row]
             belief_msg = BeliefGrid(grid=flat, sender_id="robot1")
             belief_pub.publish(belief_msg)
 
         pub.publish(msg)
-        rospy.loginfo(f"[R1] Moving towards target {target} | Local belief={local_belief:.2f} | Speed={msg.linear.x:.2f} | Added motion noise={motion_uncertainty:.4f}")
+        rospy.loginfo(f"[R1] Moving towards target {target} | Local belief={local_belief:.2f} | "
+                      f"Speed={msg.linear.x:.2f} | Motion noise={motion_noise:.3f}")
         rate.sleep()
 
 if __name__ == '__main__':
