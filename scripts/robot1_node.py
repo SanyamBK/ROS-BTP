@@ -35,14 +35,46 @@ def pose_callback(msg):
     global pose
     pose = msg
 
+# def update_belief_based_on_position():
+#     global belief, pose
+#     if pose is None:
+#         return
+#     i = min(max(int((pose.x - 2) // 2), 0), 4)
+#     j = min(max(int((pose.y - 2) // 2), 0), 4)
+#     belief[i][j] = max(belief[i][j] - 0.2, 0.0)
+#     rospy.loginfo(f"[R1] Reduced belief[{i}][{j}] to {belief[i][j]:.2f} based on position.")
+
 def update_belief_based_on_position():
     global belief, pose
     if pose is None:
         return
+
+    # Which cell?
     i = min(max(int((pose.x - 2) // 2), 0), 4)
     j = min(max(int((pose.y - 2) // 2), 0), 4)
-    belief[i][j] = max(belief[i][j] - 0.2, 0.0)
-    rospy.loginfo(f"[R1] Reduced belief[{i}][{j}] to {belief[i][j]:.2f} based on position.")
+
+    # Example: sensor sees the cell is "clear"
+    P_clear_given_clear = 0.8
+    P_clear_given_not_clear = 0.3
+
+    # Prior belief: high means uncertain
+    prior = belief[i][j]
+
+    # Likelihood: the more uncertain, the more likely we’d see “unclear”
+    # So: we invert it → more prior = more likely NOT clear
+    likelihood = P_clear_given_not_clear * prior + P_clear_given_clear * (1 - prior)
+
+    # Bayesian update:
+    belief[i][j] = prior * likelihood
+
+    # Normalize
+    total = sum([sum(row) for row in belief])
+    for ii in range(5):
+        for jj in range(5):
+            belief[ii][jj] /= total
+
+    rospy.loginfo(f"[R1] Updated belief[{i}][{j}] to {belief[i][j]:.2f} using Bayes filter.")
+
 
 def find_max_uncertain_cell():
     max_val = max(max(row) for row in belief)
@@ -112,14 +144,19 @@ def main():
             flat = [val for row in belief for val in row]
             belief_msg = BeliefGrid(grid=flat, sender_id="robot1")
             belief_pub.publish(belief_msg)
-            rospy.loginfo(f"[R1] Published belief: {flat}")
+            # rospy.loginfo(f"[R1] Published belief: {flat}")
 
-        # Move toward target
+        # After pose → grid index:
+        i = min(max(int((pose.x - 2) // 2), 0), 4)
+        j = min(max(int((pose.y - 2) // 2), 0), 4)
+
+        local_belief = belief[i][j]
+
         msg = Twist()
-        msg.linear.x = 1.0
+        msg.linear.x = 0.5 + 1.5 * local_belief  # scale speed: more uncertain → faster
         msg.angular.z = angle_diff
         pub.publish(msg)
-
+        rospy.loginfo(f"[R1] Moving towards target {target} with speed {msg.linear.x:.2f} and angle {angle_diff:.2f}")
         rate.sleep()
 
 if __name__ == '__main__':
