@@ -46,8 +46,8 @@ def update_belief_based_on_position():
     for i in range(5):
         for j in range(5):
             # Keep 80% in place, spread 20% to neighbors
-            main = 0.8 * belief[i][j]
-            spread = 0.2 * belief[i][j]
+            main = 0.95 * belief[i][j]
+            spread = 0.05 * belief[i][j]
             new_belief[i][j] += main
             neighbors = [
                 (max(i-1,0), j), (min(i+1,4), j),
@@ -68,7 +68,7 @@ def update_belief_based_on_position():
     likelihood = P_clear_given_clear * (1 - prior) + P_clear_given_not_clear * prior
     correction = prior * likelihood
 
-    neighbor_fraction = 0.2
+    neighbor_fraction = 0.05
     main_fraction = 1.0 - neighbor_fraction
 
     neighbors = [
